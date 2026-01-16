@@ -1,0 +1,398 @@
+---
+title: "The Impact of Mainline Pokémon Game Releases on Pokémon GO Player Activity"
+output:
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+This project investigates whether the release of mainline Pokémon games has had a measurable impact on player activity in `Pokémon GO`. The central hypothesis is that the release of a new core Pokémon title is associated with an increase in `Pokémon GO` player activity, potentially due to renewed interest in the franchise.
+
+To evaluate this hypothesis, two datasets are used: one containing estimated monthly `Pokémon GO` player activity since the game’s launch, and another listing the release dates of mainline Pokémon games. By comparing trends in player activity with the timing of game releases, this analysis aims to identify potential patterns or correlations between the two. We'll also do some linear regression to identify what the relation is between the release of new games and `Pokémon GO` activity and make some basic predictions for 2026.
+
+###### Notes:
+
+###### \* For the purposes of this analysis, “mainline Pokémon games” refers to core series releases on Nintendo platforms, including the `Pokémon: Let’s Go` and `Pokémon: Legends` series. Spin-off titles such as `Pokémon Mystery Dungeon`, `Pokémon Sleep`, and `Pokémon UNITE` are excluded.
+
+###### \* Niantic does not publicly disclose detailed player activity metrics for `Pokémon GO`. As a result, the dataset containing estimated monthly player activity was compiled from multiple third-party sources, including [Statista](http://statista.com), [Active Player](http://activeplayer.io), and [Business of Apps](http://businessofapps.com). These figures represent approximations rather than exact values; however, they are considered sufficient for identifying high-level trends relevant to this project.
+
+## Data
+
+On our project we used two csv files, `estimated_go_players_monthly.csv` containing data on the MAU (Monthly Active Users) estimation since the launch of `Pokémon GO`, and `Pokémon_games_release_dates.csv` containing the dates with the release dates of the Nintendo platform games.
+
+```{r}
+# Loading necessary libraries
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(gtrendsR)
+library(lubridate) # this library allows for easier use of dates and times
+
+# Loading the csv files into datasets
+mau <- read_csv("estimated_go_players_monthly.csv")
+games <- read_csv("Pokemon_games_release_dates.csv")
+
+# Previewing first 3 rows of each to make sure everything was imported correctly
+head(mau, 3)
+head(games, 3)
+```
+
+The dataframes seem simple and fairly clean, but looking at the data there are some improvements that can be done, like converting the date columns to date objects and creating a boolean column for the release months.
+
+```{r}
+# Converting date columns to date objects
+mau <- mau %>% 
+  mutate(Month = as.Date(paste0(Month, "-01")))
+
+games <- games %>% 
+  mutate(Release_Date = as.Date(Release_Date))
+
+# Renaming columns for clarity
+mau <- mau %>% 
+  rename(Date = Month, Est_Players_Millions = Estimated_Players)
+
+# Creating helper columns
+games <- games %>% 
+  mutate(Release_Month = as.Date(format(Release_Date, "%Y-%m-01")))
+mau <- mau %>% 
+  mutate(Is_Release_Month = Date %in% games$Release_Month)
+
+# Previewing first 3 rows of the dataframes again
+head(mau, 3)
+head(games, 3)
+```
+
+# Analysis
+
+## Exploratory Data Analysis
+
+Now that the dataframes are clean, we can start investigating. Let's view the `Pokémon GO` player activity since launch.
+
+```{r}
+go_mau_plot <- mau %>% 
+  ggplot(aes(Date, Est_Players_Millions)) +
+  geom_line(color = "steelblue", 
+            size = 1) +
+  scale_x_date(date_breaks = "1 year", 
+               date_labels = "%Y", 
+               limits = as.Date(c("2016-07-01", "2026-01-01"))) +
+  labs(title = "Pokémon GO Estimated Monthly Players", 
+       x = "Year",
+       y = "Estimated Players (Millions)") +
+  theme(panel.border = element_rect())
+go_mau_plot
+```
+
+Some curious observations can be made: - The release of `Pokémon GO` had an extraordinary start, with an average of 232 million users in July (when the game was issuing a staggered rollout) and the first month of activity having an average of 290 million users worldwide, getting a [Guinness World Record](https://www.guinnessworldrecords.com/world-records/503808-most-monthly-active-users-mau-for-an-augmented-reality-ar-videogame) for it. - Every summer there seems to be a peak in activity, possibly due to more people being on leave and having more time to play and engage. - Two big summer peaks, one in 2018 and one in 2022. - User activity seems to have been increasing since 2024 and has stabilised in 2025.
+
+Let's have a look at the in-game events for the months of May, June, July and August in 2018 and 2022:
+
+```{r}
+summer_events_2018_2022 <- mau %>% 
+  filter(Date >= "2018-05-01" & Date <= "2018-08-01" | Date >= "2022-05-01" & Date <= "2022-08-01")
+summer_events_2018_2022
+```
+
+The major peaks seen in the summers of 2018 and 2022 correlate with major in-game improvements, such as the introduction of "Friends, Trading & Gifts" and the launch of "Season of Go", which introduced Ultra Beasts and Ultra Wormholes to the game. This new features most likely piqued the curiosity of a big number of players who returned to the game for the holidays, but, as can be seen above, these peaks don't match the release of any of the major games.
+
+```{r}
+go_plot_releases <- go_mau_plot +
+  geom_vline(aes(xintercept = Release_Date, color = Series), data = games)
+go_plot_releases
+```
+
+From the above observations, we can see that there seems to be a small spike after the release of a game, let's compare them by game series.
+
+```{r}
+# Calculating if a month is within 2 months of a game release
+mau <- mau %>%
+  mutate(Release_Window = sapply(Date, function(d) any(abs(as.numeric(d - games$Release_Month)) <= 62)))
+
+# Calculating the change and change percentage in the months windows
+mau <- mau %>%
+  arrange(Date) %>%
+  mutate(
+    Change = Est_Players_Millions - lag(Est_Players_Millions),
+    Percent_Change = (Est_Players_Millions - lag(Est_Players_Millions)) / lag(Est_Players_Millions) * 100)
+
+# Filtering for the release windows
+release_windows <- mau %>%
+  filter(Release_Window) %>%
+  select(Date, Est_Players_Millions, Change, Percent_Change, Is_Release_Month)
+head(release_windows, 10)
+```
+
+As the Dataframe has 37 rows, we'll look at the first 10, but from this we can recognise that player activity in Pokémon GO shows variable month-to-month changes. Mainline Pokémon game releases sometimes coincide with slight increases or smaller decreases, and occasionally the month after release shows a modest uptick. Overall, there is no consistent spike pattern, suggesting that while releases may influence activity slightly, other factors likely play a larger role.
+
+```{r}
+# Checking changes by series type
+main_series_games <- release_windows %>%
+  left_join(games %>% mutate(Release_Month = as.Date(format(Release_Date, "%Y-%m-01"))) %>%
+      select(Release_Month, Series),
+    by = c("Date" = "Release_Month")) %>% 
+  distinct() %>% 
+  filter(Series == "Main Series")
+main_series_games
+
+legends_series_games <- release_windows %>%
+  left_join(games %>% mutate(Release_Month = as.Date(format(Release_Date, "%Y-%m-01"))) %>%
+      select(Release_Month, Series),
+    by = c("Date" = "Release_Month")) %>% 
+  distinct() %>% 
+  filter(Series == "Legends Series")
+legends_series_games
+
+remake_series_games <- release_windows %>%
+  left_join(games %>% mutate(Release_Month = as.Date(format(Release_Date, "%Y-%m-01"))) %>%
+      select(Release_Month, Series),
+    by = c("Date" = "Release_Month")) %>% 
+  distinct() %>% 
+  filter(Series == "Remake")
+remake_series_games
+
+side_series_games <- release_windows %>%
+  left_join(games %>% mutate(Release_Month = as.Date(format(Release_Date, "%Y-%m-01"))) %>%
+      select(Release_Month, Series),
+    by = c("Date" = "Release_Month")) %>% 
+  distinct() %>% 
+  filter(Series == "Remake/Side")
+side_series_games
+```
+
+From the segmentation of the releases by series type, it can be inferred that no series outperformed the other ones leading from the previous month to the month of release, as they all show a small negative percentage change in the month of a game's release.
+
+## Using Google Trends for Analysis
+
+We can make use of Google Trends to see if interest has spiked about `Pokémon GO` around the release of new games.
+
+```{r}
+#The code send too many requests to google and is blocking access, giving error 429.  Tried requesting by year, adding a break in between requests and reducing the terms of surch and it's still happening, so downloaded a csv file from google trends to bypass situation, will try requesting through R later
+
+keyword <- "Pokemon GO"
+start_year <- 2016
+end_year <- 2025
+output_file <- "Pokemon_google_trends_quarterly.csv"
+
+# Load previously fetched data if exists
+if(file.exists(output_file)) {
+  all_trends <- read_csv(output_file)
+  all_trends <- all_trends %>%
+    mutate(date = as.Date(date),
+           hits = as.numeric(hits))
+} else {
+  all_trends <- data.frame()
+}
+
+# Generate all year-quarter combinations
+quarters <- expand.grid(year = start_year:end_year, q = 1:4)
+
+# Check which quarters are missing
+quarters$missing <- mapply(function(y, q) {
+  start_month <- (q - 1) * 3 + 1
+  end_month   <- start_month + 2
+  start_date  <- as.Date(paste0(y, "-", sprintf("%02d", start_month), "-01"))
+  end_date    <- as.Date(paste0(y, "-", sprintf("%02d", end_month), "-", days_in_month(ymd(paste0(y, "-", sprintf("%02d", end_month), "-01")))))
+  !any(all_trends$date >= start_date & all_trends$date <= end_date)
+}, quarters$year, quarters$q)
+
+# If nothing missing, print message and exit
+if(!any(quarters$missing)) {
+  message("There's nothing to update. All quarters are already present!")
+} else {
+  # Loop over missing quarters only
+  for(i in which(quarters$missing)) {
+    y <- quarters$year[i]
+    q <- quarters$q[i]
+    
+    start_month <- (q - 1) * 3 + 1
+    end_month   <- start_month + 2
+    start_date  <- paste0(y, "-", sprintf("%02d", start_month), "-01")
+    end_date    <- paste0(y, "-", sprintf("%02d", end_month), "-", days_in_month(ymd(paste0(y, "-", sprintf("%02d", end_month), "-01"))))
+    
+    success <- FALSE
+    attempts <- 0
+    
+    while(!success && attempts < 3) {
+      Sys.sleep(3) # pause between requests
+      attempts <- attempts + 1
+      
+      temp <- tryCatch(
+        gtrends(keyword = keyword, time = paste(start_date, end_date), gprop = "web")$interest_over_time,
+        error = function(e) NULL
+      )
+      
+      if(!is.null(temp) && nrow(temp) > 0 && "date" %in% colnames(temp)) {
+        temp <- temp %>%
+          mutate(
+            hits = as.numeric(ifelse(hits == "<1", 0.5, hits)),
+            date = as.Date(date)
+          )
+        all_trends <- bind_rows(all_trends, temp)
+        success <- TRUE
+        message(sprintf("Fetched %s-Q%d successfully.", y, q))
+        
+        # Save progress to CSV
+        write_csv(all_trends, output_file)
+      } else {
+        message(sprintf("Attempt %d failed for %s-Q%d. Retrying...", attempts, y, q))
+        Sys.sleep(5)
+      }
+    }
+    
+    if(!success) message(sprintf("Failed to fetch data for %s-Q%d after 3 attempts.", y, q))
+  }
+}
+
+# Aggregate monthly
+trends_monthly <- all_trends %>%
+  mutate(Month = floor_date(date, "month")) %>%
+  group_by(Month) %>%
+  summarise(Search_Interest = mean(hits, na.rm = TRUE)) %>%
+  ungroup()
+
+# Merge with MAU
+mau_trends <- mau %>%
+  left_join(trends_monthly, by = c("Date" = "Month"))
+
+# Plot
+trends_plot <- ggplot(mau_trends, aes(x = Date)) +
+  geom_line(aes(y = Est_Players_Millions), color = "steelblue", size = 1) +
+  geom_line(aes(y = Search_Interest * 2), color = "orange", size = 0.5) +
+  labs(
+    title = "Pokémon GO MAU vs Google Search Interest",
+    y = "Players (Millions) / Search Interest x2",
+    x = "Date"
+  ) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  geom_vline(aes(xintercept = Release_Date, color = Series), data = games)
+trends_plot
+```
+
+The representation of the Google queries made with the term `Pokémon GO` in them has been fairly constant with several peaks, but none that correlations might be considered. As with both main series games and others, the graphic shows some peaks going up while others are going down at the time of a game's release.
+
+## Regression
+
+We'll now proceed to do a linear regression to determine if the approximated number of players can be estimated from a month being in a release window.
+
+```{r}
+# Model 1 will estimate the average number of monthly players from months within release windows
+model_1 <- lm(Est_Players_Millions ~ Release_Window, data = mau)
+summary(model_1)
+
+# Model 2 separates general time trends from release window effects
+mau <- mau %>%
+  mutate(Month_Num = as.numeric(Date - min(Date))/30)  # approximate months since start
+
+model_2 <- lm(Est_Players_Millions ~ Month_Num + Release_Window, data = mau)
+summary(model_2)
+
+# Model 3 estimates change with two months post release as well
+mau <- mau %>%
+  mutate(Is_Post_Release = lag(Release_Window, 2, default = FALSE))
+
+model_3 <- lm(Est_Players_Millions ~ Release_Window + Is_Post_Release + Month_Num, data = mau)
+summary(model_3)
+
+```
+
+For this regression, three models were constructed: model 1 does linear regression on the release window only, model 2 does a linear regression while taking into account the time trend, and model 3 looks into games' post-release effects in `Pokémon GO`.
+
+Based on the numbers obtained, we can achieve some conclusions: **Model 1** - RSE of 31.44 and P-value of 0.07, concludes that months close to mainline releases actually have a drop in user activity. **Model 2** - P-value is very non-significant with a value of 0.101, so we can conclude that any apparent release effect is not driven by time trends.
+
+### Model Fit: Overall Time Trend
+
+```{r}
+# Fit simple time trend model
+trend_model <- lm(Est_Players_Millions ~ Month_Num, data = mau)
+
+# Add fitted values
+mau <- mau %>%
+  mutate(Fitted = fitted(trend_model))
+
+# Plot actual vs fitted
+ggplot(mau, aes(x = Date)) +
+  geom_line(aes(y = Est_Players_Millions), linewidth = 1, color = "steelblue") +
+  geom_line(aes(y = Fitted), linetype = "dashed", linewidth = 1, color = "orangered") +
+  labs(title = "Pokémon GO Monthly Active Users: Actual vs Trend",
+    x = "Date", y = "Estimated Players (Millions)") 
+```
+
+**Model 3** - P-value of 0.019, meaning the post-release month is statistically significant. This means that the first few months after the release of a mainline game actually see a drop in `Pokémon GO` player activity, suggesting players might actually be shifting their attention temporarily from `Pokémon GO` to the new game.
+
+Summary: Linear regression analysis found no statistically significant increase in Pokémon GO monthly active users during months surrounding mainline Pokémon game releases. When accounting for post-release effects, however, player activity was significantly lower in the month following a release. This suggests that major Pokémon game launches may temporarily draw player attention away from Pokémon GO rather than stimulate increased engagement.
+
+## 2024-2025 Regression
+
+For comparison, we'll also run a new regression with values only from 2024 and 2025, so as to rule out the initial late 2016 spike and the effects that the Covid-19 pandemic might have and also for the possibility to look at a player base that is now more settled.
+
+```{r}
+# Filtering the data
+mau_2024_2025 <- mau %>%
+  filter(Date >= as.Date("2024-01-01"),
+         Date <= as.Date("2025-12-31"))
+
+# Building model
+model_recent <- lm(Est_Players_Millions ~ Release_Window,
+  data = mau_2024_2025)
+summary(model_recent)
+
+# Building post release model
+model_recent_post <- lm(Est_Players_Millions ~ Release_Window + Is_Post_Release,
+  data = mau_2024_2025)
+summary(model_recent_post)
+#
+```
+
+A separate regression focusing on data from 2024 to 2025 shows a statistically significant increase in Pokémon GO monthly active users during months surrounding the release of mainline Pokémon games. This contrasts with earlier years of the dataset, where no consistent increase was observed and activity often declined in the months following a release. In the more recent data, however, this effect appears to be short-lived, as it weakens once post-release months are examined separately. Overall, this suggests that the relationship between mainline Pokémon game releases and Pokémon GO player activity has changed over time.
+
+## 2026 Predictions
+
+The next step is to do some predictions for 2026 and do a simple linear regression prediction to get some values for March, June, September and December 2026:
+
+```{r}
+# Fitting the model
+trend_model <- lm(Est_Players_Millions ~ Month_Num,
+  data = mau)
+summary(trend_model)
+
+# Creating a tibble with the months we're interested in
+future_2026 <- tibble(Date = as.Date(c(
+    "2026-03-01",
+    "2026-06-01",
+    "2026-09-01",
+    "2026-12-01"))) %>% 
+  mutate(Month_Num = as.numeric(difftime(Date, min(mau$Date), units = "days")) / 30.44)
+
+# future_2026 <- future_2026 %>%
+  future_2026 <- future_2026 %>%
+  mutate(Predicted_MAU = predict(trend_model, newdata = future_2026), interval = "confidence")
+future_2026
+```
+
+### Projected Monthly Active Users for 2026
+
+```{r}
+# Predict values
+future_2026$Predicted_MAU <- predict(trend_model, newdata = future_2026)
+
+# Plot historical + predictions
+past_future_plot <- ggplot() +
+  geom_line(data = mau,
+            aes(x = Date, y = Est_Players_Millions),linewidth = 1, color = "steelblue") +
+  geom_point(data = future_2026, aes(x = Date, y = Predicted_MAU), size = 3, color = "orange") +
+  geom_line(data = future_2026, aes(x = Date, y = Predicted_MAU), linetype = "dotted") +
+  labs(title = "Projected Pokémon GO MAU for Selected Months in 2026",
+    x = "Date", y = "Estimated Players (Millions)") +
+  scale_x_date(limits = as.Date(c("2024-01-01", "2026-12-31")), 
+               date_breaks = "6 months", date_labels = "%b %Y")
+past_future_plot
+```
+
+Using a simple linear trend model fitted to historical Pokémon GO monthly active user estimates, player activity in 2026 is projected to remain relatively stable, with modest fluctuations across the year. These projections are intended to provide a high-level baseline rather than precise forecasts, as they do not account for future game releases, in-game events, or external factors. Confidence intervals widen toward the end of 2026, reflecting increased uncertainty in longer-term projections.
+
+# Conclusion and Further Work
+
+At the start of this project, my assumption was that whenever a new Pokémon game came out, there would be a slight spike in `Pokémon GO` player activity, as this would regenerate interest in the franchise, but the analysis conducted with this project actually reflects the opposite: That player engagement tends to have a dip during and shortly after a new game comes out, and from here, one can extrapolate that it's actually the new games that temporarily take attention away from `Pokémon GO`. We also make the discovery that in the last couple of years, not only has the `Pokémon GO` game seen an increase and then stabilising of its player base, but the trend observed actually flipped, with `Pokémon GO` seeing a small increase shortly after a new mainline game comes out. We could also confirm that the release of new games has little to no effect on Google searches for `Pokémon GO`. With the data that we have available to us, it was possible to make some predictions for 2026 that would put the MAU close to 95 million users for each trimester.
+
+Going forward, it would be ideal to conduct this research with official numbers released by Niantic and some other Pokémon-related queries in Google Trends.
